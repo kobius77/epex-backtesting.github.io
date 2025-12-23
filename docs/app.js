@@ -809,22 +809,44 @@ function getDaysForMonth(index, leapyear) {
 
 function drawTableTframe(includeMonthlyFee, tframe, tframeKwh, h0NormPrice, h0NormKwh, tframeFmt1, tframeFmt2, tariffs, feedin) {
     let content = "<tbody>";
+    
+    // Initialize accumulators for the footer row
+    let sumKwh = new Decimal(0.0);
+    let sumPrice = new Decimal(0.0);
+    let sumH0Price = new Decimal(0.0);
+    let sumH0Kwh = new Decimal(0.0);
+    let sumTariffCosts = {};
+    
+    // Initialize tariff totals
+    for (var i in tariffs) {
+        sumTariffCosts[i] = new Decimal(0.0);
+    }
+
     var tframeArray = Object.keys(tframe);
     for (var idx = 0; idx < tframeArray.length; idx++) {
-
         var e = tframeArray[idx];
+        
+        // --- Accumulate Totals ---
+        sumKwh = sumKwh.plus(tframeKwh[e]);
+        sumPrice = sumPrice.plus(tframe[e]);
+        if (!feedin) {
+            sumH0Price = sumH0Price.plus(h0NormPrice[e]);
+            sumH0Kwh = sumH0Kwh.plus(h0NormKwh[e]);
+        }
+        // -------------------------
+
         const timeframePrice = tframe[e].dividedBy(tframeKwh[e]).toFixed(2);
         const currentDate = format(parse(e, tframeFmt1, new Date()), tframeFmt2);
+        
         content += "<tr>";
         content += "<td><b>" + currentDate + "<b></td>";
         content += "<td>" + tframeKwh[e].toFixed(2) + " kWh</td>";
         content += "<td>" + timeframePrice + " ct/kWh</td>";
+        
         if (!feedin) {
             const h0Norm = h0NormPrice[e].dividedBy(h0NormKwh[e]).toFixed(2);
             const h0NormDiff = (timeframePrice - h0Norm);
             content += "<td>" + h0Norm + " ct/kWh <span class=" + getPriceDiffClass(h0NormDiff) + ">(" + h0NormDiff.toFixed(2) + ")</span></td>";
-        }
-        if (!feedin) {
             content += "<td>" + tframe[e].dividedBy(100).toFixed(2) + " &euro;</td>";
             content += `<td class="tablethickborderright">${tframe[e].times(1.2).dividedBy(100).toFixed(2)} &euro;</td>`;
         } else {
@@ -837,11 +859,17 @@ function drawTableTframe(includeMonthlyFee, tframe, tframeKwh, h0NormPrice, h0No
         const daysForMonth = getDaysForMonth(currentMonth, daysForYear == 366);
         const monthlyFeeFactor = 12 * daysForMonth / daysForYear;
 
+        // Find best price for this row to bold it
         var best_price = tariffs[0].calculate(tframe[e], tframeKwh[e], includeMonthlyFee, monthlyFeeFactor);
         var i_best_price = 0;
+        
         for (var i in tariffs) {
             let price = tariffs[i].calculate(tframe[e], tframeKwh[e], includeMonthlyFee, monthlyFeeFactor);
-            console.log(typeof(best_price));
+            
+            // --- Accumulate Tariff Total ---
+            sumTariffCosts[i] = sumTariffCosts[i].plus(price);
+            // -------------------------------
+
             if (feedin) {
                 if (price.greaterThanOrEqualTo(best_price)) {
                     best_price = price;
@@ -854,31 +882,99 @@ function drawTableTframe(includeMonthlyFee, tframe, tframeKwh, h0NormPrice, h0No
                 }
             }
         }
+
         for (var i in tariffs) {
             let isBestPrice = i == i_best_price;
             let price = tariffs[i].calculate(tframe[e], tframeKwh[e], includeMonthlyFee, monthlyFeeFactor);
+            
             content += "<td>";
-            if (isBestPrice) {
-                content += "<b>";
-            }
+            if (isBestPrice) content += "<b>";
             content += price.dividedBy(100).toFixed(2) + " &euro;";
-            if (isBestPrice) {
-                content += "</b>";
-            }
+            if (isBestPrice) content += "</b>";
             content += "</td>";
+            
             content += `<td class="tablethickborderrightabit">`;
-            if (isBestPrice) {
-                content += "<b>";
-            }
-
+            if (isBestPrice) content += "<b>";
             content += price.dividedBy(tframeKwh[e]).toFixed(2) + " ct/kWh";
-            if (isBestPrice) {
-                content += "</b>";
-            }
+            if (isBestPrice) content += "</b>";
             content += "</td>";
         }
         content += "</tr>";
     }
+
+    // ============================================
+    // GENERATE FOOTER ROW (Average / Total)
+    // ============================================
+    content += "<tr class='tablethickbordertop' style='background-color: #f0f0f0; font-weight: bold;'>";
+    content += "<td>Ø / Summe</td>";
+    
+    // Total kWh
+    content += "<td>" + sumKwh.toFixed(2) + " kWh</td>";
+    
+    // Average Spot Price (Weighted Average: Total Cost / Total kWh)
+    let avgSpotPrice = sumKwh.isZero() ? new Decimal(0) : sumPrice.dividedBy(sumKwh);
+    content += "<td>" + avgSpotPrice.toFixed(2) + " ct/kWh</td>";
+
+    if (!feedin) {
+        // Average H0 Price
+        let avgH0 = sumH0Kwh.isZero() ? new Decimal(0) : sumH0Price.dividedBy(sumH0Kwh);
+        let diff = avgSpotPrice.minus(avgH0);
+        content += "<td>" + avgH0.toFixed(2) + " ct/kWh <span class=" + getPriceDiffClass(diff.toNumber()) + ">(" + diff.toFixed(2) + ")</span></td>";
+        
+        // Total Netto
+        content += "<td>" + sumPrice.dividedBy(100).toFixed(2) + " &euro;</td>";
+        // Total Brutto
+        content += `<td class="tablethickborderright">${sumPrice.times(1.2).dividedBy(100).toFixed(2)} &euro;</td>`;
+    } else {
+        // Feedin Total
+        content += `<td class="tablethickborderright">${sumPrice.dividedBy(100).toFixed(2)} &euro;</td>`;
+    }
+
+    // Determine Best Total Price to bold the result in footer
+    let bestTotal = null;
+    let i_best_total = 0;
+    
+    // Initialize with first tariff
+    if (Object.keys(sumTariffCosts).length > 0) {
+        bestTotal = sumTariffCosts[0];
+    }
+
+    for (var i in tariffs) {
+        let price = sumTariffCosts[i];
+        if (feedin) {
+            if (price.greaterThanOrEqualTo(bestTotal)) {
+                bestTotal = price;
+                i_best_total = i;
+            }
+        } else {
+            if (bestTotal.greaterThanOrEqualTo(price)) {
+                bestTotal = price;
+                i_best_total = i;
+            }
+        }
+    }
+
+    // Draw Tariff Totals
+    for (var i in tariffs) {
+        let isBestTotal = i == i_best_total;
+        let totalCost = sumTariffCosts[i];
+        let avgCost = sumKwh.isZero() ? new Decimal(0) : totalCost.dividedBy(sumKwh);
+
+        content += "<td>";
+        if (isBestTotal) content += "<b>";
+        content += totalCost.dividedBy(100).toFixed(2) + " &euro;";
+        if (isBestTotal) content += "</b>";
+        content += "</td>";
+
+        content += `<td class="tablethickborderrightabit">`;
+        if (isBestTotal) content += "<b>";
+        content += avgCost.toFixed(2) + " ct/kWh";
+        if (isBestTotal) content += "</b>";
+        content += "</td>";
+    }
+
+    content += "</tr>";
+    
     return content + "</tbody>";
 }
 
